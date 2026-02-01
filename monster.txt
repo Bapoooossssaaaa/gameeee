@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Bacteria Entity - Procedural Reconstruction</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+
+        #ui { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 10; flex-wrap: wrap; justify-content: center; }
+
+        button { padding: 10px 18px; background: rgba(0,0,0,0.9); color: #666; border: 1px solid #222; cursor: pointer; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; transition: 0.2s; border-radius: 2px; }
+
+        button:hover { background: #111; color: #fff; border-color: #444; }
+
+        button.active { background: #fff; color: #000; border-color: #fff; font-weight: bold; }
+
+        #jumpscare-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: black; display: none; z-index: 1000; }
+
+        .label { position: absolute; top: 20px; left: 20px; color: #222; font-size: 10px; letter-spacing: 1px; pointer-events: none; z-index: 100; }
+
+        
+
+        /* CRT/VHS Glitch Overlay */
+
+        #crt-overlay {
+
+            position: fixed;
+
+            top: 0; left: 0; width: 100%; height: 100%;
+
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.04));
+
+            background-size: 100% 4px, 4px 100%;
+
+            pointer-events: none;
+
+            z-index: 50;
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+
+
+    <div class="label" id="status">LOG_SESSION: ASYNC_ENTITY_PROCEDURAL // RECON_01</div>
+
+    <div id="crt-overlay"></div>
+
+    <div id="jumpscare-overlay"></div>
+
+
+
+    <div id="ui">
+
+        <button onclick="setAnim('idle')" id="btn-idle" class="active">Idle</button>
+
+        <button onclick="setAnim('walk')" id="btn-walk">Walking</button>
+
+        <button onclick="setAnim('run')" id="btn-run">Run</button>
+
+        <button onclick="setAnim('search')" id="btn-search">Search</button>
+
+        <button onclick="setAnim('attack')" id="btn-attack">Attack</button>
+
+        <button onclick="triggerJumpscare()" style="color: #ff0000; border-color: #500;">Jumpscare</button>
+
+    </div>
+
+
+
+    <script>
+
+        let scene, camera, renderer, clock, flashlight;
+
+        let currentState = 'idle';
+
+        let isJumpscare = false;
+
+        
+
+        // Skeletal Rig (Joints)
+
+        const rig = {
+
+            center: new THREE.Vector3(0, 4, 0),
+
+            spine: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()],
+
+            head: new THREE.Vector3(),
+
+            lArm: Array(4).fill().map(() => new THREE.Vector3()), // Shoulder, Elbow, Wrist, Tip
+
+            rArm: Array(4).fill().map(() => new THREE.Vector3()),
+
+            lLeg: Array(3).fill().map(() => new THREE.Vector3()), // Hip, Knee, Foot
+
+            rLeg: Array(3).fill().map(() => new THREE.Vector3())
+
+        };
+
+
+
+        const tubeMeshes = [];
+
+        const MAX_TUBE_SEGMENTS = 280; // Enough for high detail tangled bundle
+
+
+
+        function init() {
+
+            scene = new THREE.Scene();
+
+            scene.background = new THREE.Color(0xfafafa);
+
+
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            camera.position.set(12, 6, 16);
+
+            camera.lookAt(0, 3, 0);
+
+
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            renderer.shadowMap.enabled = true;
+
+            document.body.appendChild(renderer.domElement);
+
+
+
+            // Backrooms Lighting
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.1);
+
+            scene.add(ambient);
+
+
+
+            flashlight = new THREE.SpotLight(0xffffff, 1.5, 60, Math.PI / 8, 0.4, 1);
+
+            flashlight.position.set(10, 15, 15);
+
+            flashlight.castShadow = true;
+
+            scene.add(flashlight);
+
+            scene.add(flashlight.target);
+
+
+
+            // White Grid Floor
+
+            const groundGeo = new THREE.PlaneGeometry(300, 300);
+
+            const groundMat = new THREE.MeshPhongMaterial({ color: 0xf5f5dc, shininess: 0 });
+
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+
+            ground.rotation.x = -Math.PI / 2;
+
+            ground.receiveShadow = true;
+
+            scene.add(ground);
+
+
+
+            const grid = new THREE.GridHelper(300, 80, 0x000000, 0xcccccc);
+
+            grid.position.y = 0.01;
+
+            scene.add(grid);
+
+
+
+            buildBacteriaMesh();
+
+
+
+            clock = new THREE.Clock();
+
+            window.addEventListener('resize', onWindowResize);
+
+            animate();
+
+        }
+
+
+
+        function buildBacteriaMesh() {
+
+            const wireMat = new THREE.MeshPhongMaterial({ 
+
+                color: 0x050505, 
+
+                shininess: 0,
+
+                specular: 0x000000 
+
+            });
+
+            const tubeGeo = new THREE.CylinderGeometry(0.025, 0.025, 1, 3);
+
+
+
+            for (let i = 0; i < MAX_TUBE_SEGMENTS; i++) {
+
+                const mesh = new THREE.Mesh(tubeGeo, wireMat);
+
+                mesh.castShadow = true;
+
+                scene.add(mesh);
+
+                tubeMeshes.push(mesh);
+
+            }
+
+
+
+            // The Messy Head
+
+            const headGeo = new THREE.TorusKnotGeometry(0.4, 0.15, 40, 6);
+
+            rig.headMesh = new THREE.Mesh(headGeo, wireMat);
+
+            scene.add(rig.headMesh);
+
+
+
+            // Glowing Eyes
+
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffaa });
+
+            rig.eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), eyeMat);
+
+            rig.eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), eyeMat);
+
+            scene.add(rig.eyeL, rig.eyeR);
+
+        }
+
+
+
+        function updateTubeSegment(mesh, p1, p2, jitter = 0.03) {
+
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+
+            const len = dir.length();
+
+            mesh.scale.set(1, len, 1);
+
+            mesh.position.copy(p1).add(dir.multiplyScalar(0.5));
+
+            // Slight randomized jitter for that messy wire look
+
+            mesh.position.x += (Math.random() - 0.5) * jitter;
+
+            mesh.position.y += (Math.random() - 0.5) * jitter;
+
+            mesh.position.z += (Math.random() - 0.5) * jitter;
+
+            mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+
+        }
+
+
+
+        function setAnim(s) {
+
+            if (isJumpscare) return;
+
+            currentState = s;
+
+            document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+
+            document.getElementById(`btn-${s}`)?.classList.add('active');
+
+            document.getElementById('status').innerText = `LOG_SESSION: ASYNC_ENTITY_PROCEDURAL // ${s.toUpperCase()}`;
+
+        }
+
+
+
+        function triggerJumpscare() {
+
+            isJumpscare = true;
+
+            document.getElementById('ui').style.display = 'none';
+
+            const overlay = document.getElementById('jumpscare-overlay');
+
+            overlay.style.display = 'block';
+
+            scene.background = new THREE.Color(0x000000); // Black Screen
+
+            
+
+            setTimeout(() => {
+
+                isJumpscare = false;
+
+                document.getElementById('ui').style.display = 'flex';
+
+                overlay.style.display = 'none';
+
+                scene.background = new THREE.Color(0xfafafa);
+
+                camera.position.set(12, 6, 16);
+
+                camera.fov = 60;
+
+                camera.updateProjectionMatrix();
+
+                setAnim('idle');
+
+            }, 2500);
+
+        }
+
+
+
+        function animate() {
+
+            requestAnimationFrame(animate);
+
+            const t = clock.getElapsedTime();
+
+            
+
+            updateSkeleton(t);
+
+            
+
+            // Connect joints with tangled wire bundles
+
+            let mIdx = 0;
+
+            const STRANDS = 5; // Strands per limb section
+
+            
+
+            const drawBundle = (pts) => {
+
+                for (let s = 0; s < STRANDS; s++) {
+
+                    for (let i = 0; i < pts.length - 1; i++) {
+
+                        if (mIdx >= MAX_TUBE_SEGMENTS) break;
+
+                        const p1 = pts[i].clone().add(new THREE.Vector3(
+
+                            Math.sin(t*40 + i + s)*0.07, 
+
+                            Math.cos(t*40 + i + s)*0.07, 
+
+                            0
+
+                        ));
+
+                        const p2 = pts[i+1].clone().add(new THREE.Vector3(
+
+                            Math.sin(t*40 + i+1 + s)*0.07, 
+
+                            Math.cos(t*40 + i+1 + s)*0.07, 
+
+                            0
+
+                        ));
+
+                        updateTubeSegment(tubeMeshes[mIdx++], p1, p2);
+
+                    }
+
+                }
+
+            };
+
+
+
+            drawBundle([rig.spine[2], rig.spine[1], rig.spine[0], rig.head]);
+
+            drawBundle([rig.spine[0], ...rig.lArm]);
+
+            drawBundle([rig.spine[0], ...rig.rArm]);
+
+            drawBundle([rig.spine[2], ...rig.lLeg]);
+
+            drawBundle([rig.spine[2], ...rig.rLeg]);
+
+
+
+            // Hide unused
+
+            while (mIdx < tubeMeshes.length) tubeMeshes[mIdx++].position.set(0, -100, 0);
+
+
+
+            if (isJumpscare) {
+
+                const h = rig.head;
+
+                // Monster in focus on black screen
+
+                camera.position.set(h.x + (Math.random()-0.5)*0.2, h.y + (Math.random()-0.5)*0.2, h.z + 1.2);
+
+                camera.lookAt(h);
+
+                camera.fov = 40 + Math.sin(t*70)*20;
+
+                camera.updateProjectionMatrix();
+
+                rig.eyeL.scale.setScalar(Math.random()*6);
+
+                rig.eyeR.scale.setScalar(Math.random()*6);
+
+                flashlight.intensity = 5 + Math.random()*10;
+
+            } else {
+
+                flashlight.target.position.lerp(rig.head, 0.1);
+
+                camera.lookAt(0, 3, 0);
+
+            }
+
+
+
+            renderer.render(scene, camera);
+
+        }
+
+
+
+        function updateSkeleton(t) {
+
+            const wave = (f, a) => Math.sin(t * f) * a;
+
+            const twitch = (f, a) => (Math.sin(t * f) > 0.85 ? a : 0);
+
+
+
+            let bob = 0;
+
+            let moveSpeed = 0;
+
+            if (currentState === 'walk') { moveSpeed = 8; bob = wave(moveSpeed*2, 0.35); }
+
+            if (currentState === 'run') { moveSpeed = 22; bob = wave(moveSpeed, 0.7); }
+
+            if (currentState === 'attack') bob = -2.2;
+
+
+
+            rig.center.set(0, 4.8 + bob, 0);
+
+
+
+            // Spine
+
+            for (let i = 0; i < 3; i++) {
+
+                rig.spine[i].set(wave(35, 0.05), rig.center.y - (i * 1.5), wave(30, 0.05));
+
+            }
+
+
+
+            // Head (messy twitches)
+
+            rig.head.copy(rig.spine[0]).add(new THREE.Vector3(twitch(60, 0.15), 1, twitch(55, 0.15)));
+
+            rig.headMesh.position.copy(rig.head);
+
+            rig.headMesh.rotation.set(wave(90, 0.3), wave(90, 0.6), wave(90, 0.3));
+
+            
+
+            if (currentState === 'search') {
+
+                rig.headMesh.rotation.y += wave(5, 2);
+
+                rig.headMesh.rotation.x += wave(2.5, 0.8);
+
+            }
+
+
+
+            // Eyes flickering
+
+            const eO = 0.28;
+
+            const eyeBase = new THREE.Vector3(eO, 0.1, 0.3).applyQuaternion(rig.headMesh.quaternion);
+
+            rig.eyeL.position.copy(rig.head).add(eyeBase);
+
+            rig.eyeR.position.copy(rig.head).add(eyeBase.clone().setX(-eO).applyQuaternion(rig.headMesh.quaternion));
+
+            rig.eyeL.visible = rig.eyeR.visible = (Math.random() > 0.08);
+
+
+
+            const animateLimb = (pts, side, isArm) => {
+
+                const phase = (side * Math.PI) + (t * moveSpeed);
+
+                const active = (currentState === 'idle') ? 0.08 : 1;
+
+                
+
+                if (isArm) {
+
+                    pts[0].set(rig.spine[0].x + (side * 1), rig.spine[0].y, rig.spine[0].z); // Shoulder
+
+                    pts[1].set(pts[0].x + (side * 2.2), pts[0].y - 0.8, pts[0].z + wave(phase, 2)*active); // Elbow
+
+                    pts[2].set(pts[1].x - (side * 0.4), pts[1].y - 3, pts[1].z + wave(phase+1, 3.5)*active); // Wrist
+
+                    pts[3].set(pts[2].x + (Math.random()-0.5)*0.2, pts[2].y - 0.7, pts[2].z + wave(100, 0.2)); // Tip
+
+                    if (currentState === 'attack') {
+
+                        pts[1].z = -3; pts[2].z = -6.5 + wave(110, 0.4); pts[3].z = -8.5;
+
+                    }
+
+                } else {
+
+                    pts[0].set(rig.spine[2].x + (side * 0.7), rig.spine[2].y, rig.spine[2].z); // Hip
+
+                    const kLift = Math.max(0, wave(phase, 3)*active);
+
+                    pts[1].set(pts[0].x + (side * 0.4), pts[0].y - 2.5 + kLift, pts[0].z + wave(phase, 3)*active); // Knee
+
+                    const fPlant = Math.max(0, pts[1].y - 2.8 + wave(phase + Math.PI, 1.8)*active);
+
+                    pts[2].set(pts[1].x, fPlant, pts[1].z + wave(phase, 1.4)*active); // Foot
+
+                }
+
+                pts.forEach(p => p.add(new THREE.Vector3((Math.random()-0.5)*0.06, (Math.random()-0.5)*0.06, (Math.random()-0.5)*0.06)));
+
+            };
+
+
+
+            animateLimb(rig.lArm, 1, true);
+
+            animateLimb(rig.rArm, -1, true);
+
+            animateLimb(rig.lLeg, 1, false);
+
+            animateLimb(rig.rLeg, -1, false);
+
+        }
+
+
+
+        function onWindowResize() {
+
+            camera.aspect = window.innerWidth / window.innerHeight;
+
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+        }
+
+
+
+        window.onload = init;
+
+    </script>
+
+</body>
+
+</html>
+
+
+
+put this monster in the game
